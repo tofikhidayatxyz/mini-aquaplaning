@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { ShowerHead, RotateCcw, Wifi, WifiOff, RefreshCw, Terminal, CheckCircle2, AlertCircle } from 'lucide-react';
 
-// Dynamically resolve API URL to match the current network host
-const API_BASE = `http://${window.location.hostname}:8080/api`;
+// Use a relative API path so requests go through the same origin as the page.
+// This works behind the nginx reverse proxy and the Cloudflare Tunnel without
+// triggering mixed-content errors on HTTPS.
+const API_BASE = '/api';
 
 export default function App() {
   const [status, setStatus] = useState({
@@ -145,7 +147,7 @@ export default function App() {
           )}
         </div>
         <div className="network-details">
-          IP: {API_BASE.replace('http://', '').replace('/api', '')} | SSID: ByteLogic Inovation
+          IP: {window.location.host} | SSID: ByteLogic Inovation
         </div>
       </div>
 

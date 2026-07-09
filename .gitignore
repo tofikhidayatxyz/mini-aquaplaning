@@ -28,6 +28,9 @@ webapps/backend/output.log
 # PM2 logs
 webapps/**/pm2-*.log
 
+# PM2 logs (generated at runtime)
+webapps/**/pm2-*.log
+
 # IDEs and OS files
 .DS_Store
 .vscode/

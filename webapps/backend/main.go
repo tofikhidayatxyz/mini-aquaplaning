@@ -271,9 +271,13 @@ func main() {
 		w.Write([]byte(`{"success":true}`))
 	}))
 
-	// Start HTTP Server explicitly on 0.0.0.0
-	log.Println("Starting HTTP REST API Server on port 8080...")
-	if err := http.ListenAndServe("0.0.0.0:8080", nil); err != nil {
+	// Start HTTP Server explicitly on 0.0.0.0 (port configurable via PORT env, default 8080)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Printf("Starting HTTP REST API Server on port %s...\n", port)
+	if err := http.ListenAndServe("0.0.0.0:"+port, nil); err != nil {
 		log.Fatalf("HTTP Server failure: %v", err)
 	}
 }
