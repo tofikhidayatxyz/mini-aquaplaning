@@ -1,8 +1,8 @@
 # Mini Aquaplaning (Homies Edge Node)
 
-> Reference local-first edge controller and automation runtime for closed-loop aquaponics environments.
+> Reference local-first edge controller and automation runtime for closed-loop aquaponics environments (homies.id Specimen #01).
 
-This repository contains the complete embedded firmware, local MQTT gateway, and operator dashboard powering the Aquaponics Edge Node specimen on [homies.id](https://homies.id).
+This repository contains the embedded firmware, local MQTT gateway, and operator dashboard powering the Aquaponics Edge Node specimen on [homies.id](https://homies.id).
 
 ---
 
@@ -15,18 +15,23 @@ The system operates 100% locally on your LAN without third-party cloud dependenc
       |
       +---> GPIO 5: Optocoupler Relay (Submersible Pump)
       +---> GPIO 6: Peripheral Bus Reset (Hardware Watchdog)
+      +---> Local Watchdog: 15-min max continuous runtime safety cutoff
+      +---> Standalone Cycle: Autonomous 3-min hydration cycle if network severed
 ```
 
 1. **Firmware (`src/main.cpp`)**:
    - Target: ESP32-C3 RISC-V microcontroller (PlatformIO / Arduino).
+   - Local-First Autonomous Fail-Safe 1: Automatic 15-minute continuous run cutoff protects pump motors from dry running, independent of broker commands.
+   - Local-First Autonomous Fail-Safe 2: Standalone periodic biological cycle keeps roots hydrated even during total LAN/broker outages.
    - Local MQTT client with automatic reconnection and Last Will & Testament (LWT).
    - Optically isolated relay triggers (Active-Low) on GPIO 5.
    - Non-blocking 1000ms watchdog pulse generator on GPIO 6.
 
 2. **Backend Gateway (`webapps/backend/`)**:
    - Go service embedding an in-memory MQTT broker (`github.com/mochi-mqtt/server/v2`).
-   - JSON state persistence (`state.json`) with thread-safe file sync.
+   - Atomic state persistence (`state.json` via temp file rename) to prevent corruption across power cuts.
    - REST API endpoints for status, relay switching, and pulse reboot.
+   - Captures `esp32/alerts` telemetry for autonomous safety events.
 
 3. **Frontend Dashboard (`webapps/frontend/`)**:
    - Vite + React control console.
@@ -54,38 +59,30 @@ Broker runs locally on port `1883` (configurable via `MQTT_PORT`).
 | `esp32/shower/set` | Hub -> ESP32 | `1` / `0` | No | Request pump relay state |
 | `esp32/shower/status` | ESP32 -> Hub | `1` / `0` | Yes | Confirmed physical relay state |
 | `esp32/reboot/trigger` | Hub -> ESP32 | `1` | No | Request 1s peripheral reset pulse |
+| `esp32/alerts` | ESP32 -> Hub | string alert code | No | Autonomous safety trip alerts |
 
 ---
 
 ## Getting Started
 
-### 1. Flash the ESP32-C3 Microcontroller
+### 1. Embedded Firmware (ESP32-C3)
 
-1. Install [PlatformIO Core](https://platformio.org/install/cli) or PlatformIO IDE.
-2. Copy the credentials template:
-   ```bash
-   cp include/secrets.h.example include/secrets.h
-   ```
-3. Edit `include/secrets.h` with your local 2.4 GHz WiFi SSID and MQTT broker IP.
-4. Build and upload firmware over USB:
-   ```bash
-   pio run -e esp32-c3-devkitm-1 -t upload
-   pio device monitor
-   ```
+```bash
+# Copy template and set your local WiFi / Broker parameters
+cp include/secrets.h.example include/secrets.h
 
-### 2. Run the Local Backend Hub
+# Build and flash via PlatformIO
+pio run --target upload
+```
 
-Requires Go 1.22+.
+### 2. Edge Broker Gateway (Go)
 
 ```bash
 cd webapps/backend
-go build -o server .
-PORT=8080 MQTT_PORT=1883 ./server
+go run .
 ```
 
-### 3. Run the Frontend Dashboard
-
-Requires Node.js 18+.
+### 3. Frontend Web Console (React)
 
 ```bash
 cd webapps/frontend
@@ -93,23 +90,8 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` to access the local control panel.
-
----
-
-## Production Deployment (PM2)
-
-For persistent LAN deployments on edge boards (e.g. Raspberry Pi, Orange Pi):
-
-```bash
-cd webapps
-npm install -g pm2
-pm2 start ecosystem.config.js
-pm2 save
-```
-
 ---
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details. Developed by Homies Systems.
+MIT License (c) 2026 Tofik Hidayat / Homies Systems.

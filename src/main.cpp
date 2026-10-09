@@ -39,40 +39,53 @@ const uint16_t mqtt_port = MQTT_PORT;
 #define RELAY_ON LOW
 #define RELAY_OFF HIGH
 
+// Local Safety Thresholds & Autonomous Biological Timing
+const unsigned long MAX_SHOWER_RUNTIME_MS = 15UL * 60UL * 1000UL; // 15 mins max run
+const unsigned long OFFLINE_CYCLE_PERIOD_MS = 30UL * 60UL * 1000UL; // 30 min window
+const unsigned long OFFLINE_CYCLE_PUMP_ON_MS = 3UL * 60UL * 1000UL; // 3 min pulse
+
 // MQTT Topics
 #define TOPIC_STATUS "esp32/status"
 #define TOPIC_SHOWER_SET "esp32/shower/set"
 #define TOPIC_SHOWER_STATUS "esp32/shower/status"
 #define TOPIC_REBOOT_TRIGGER "esp32/reboot/trigger"
+#define TOPIC_ALERTS "esp32/alerts"
 
 // Client instances
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// Timing variables
+// Timing & state tracking
 unsigned long lastReconnectAttempt = 0;
 unsigned long rebootTriggerTime = 0;
 bool rebootActive = false;
+
+// Local-first autonomous state
+unsigned long lastShowerStartTime = 0;
+unsigned long lastMqttSeen = 0;
+bool autonomousOfflineFallback = true;
 
 // Function declarations
 void setupWifi();
 void callback(char *topic, byte *payload, unsigned int length);
 bool reconnect();
 void publishShowerStatus();
+void setShowerState(bool turnOn, const char *reason);
 
 void setup() {
   Serial.begin(115200);
   delay(2000);
 
   Serial.println("\n==============================================");
-  Serial.println("     ESP32-C3 Smart Relay Controller          ");
+  Serial.println("  ESP32-C3 Autonomous Biological Controller   ");
+  Serial.println("  Specimen #01 - Local-First Habitats Runtime ");
   Serial.println("==============================================");
 
   // Initialize pins
   pinMode(SHOWER_PIN, OUTPUT);
   pinMode(REBOOT_PIN, OUTPUT);
 
-  // Set initial states
+  // Set initial safe states
   digitalWrite(SHOWER_PIN, RELAY_OFF);
   digitalWrite(REBOOT_PIN, RELAY_OFF);
 
@@ -80,12 +93,12 @@ void setup() {
   setupWifi();
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
+
+  lastMqttSeen = millis();
 }
 
 void setupWifi() {
   delay(10);
-
-  // Set station mode first to allow scanning
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
@@ -106,11 +119,7 @@ void setupWifi() {
   Serial.println("----------------------------------------------");
 
   Serial.printf("Connecting to WiFi: %s\n", ssid);
-
-  // Enable auto-reconnect so ESP32 background task manages connection retries
-  // automatically
   WiFi.setAutoReconnect(true);
-
   WiFi.begin(ssid, password);
 
   int attempts = 0;
@@ -126,68 +135,64 @@ void setupWifi() {
     Serial.println(WiFi.localIP());
   } else {
     Serial.printf("\nWiFi connection failed! Status Code: %d\n", WiFi.status());
-    Serial.println("Common Status Codes:");
-    Serial.println(
-        "  1 = WL_NO_SSID_AVAIL (Network not found/too far/5GHz-only issue)");
-    Serial.println("  4 = WL_CONNECT_FAILED (Incorrect password)");
-    Serial.println("  6 = WL_DISCONNECTED (Connecting/Disconnected)");
-    Serial.println("Will keep retrying in loop...");
+    Serial.println("Will retry automatically via background watchdog.");
+  }
+}
+
+void setShowerState(bool turnOn, const char *reason) {
+  bool currentOn = (digitalRead(SHOWER_PIN) == RELAY_ON);
+  if (turnOn) {
+    digitalWrite(SHOWER_PIN, RELAY_ON);
+    lastShowerStartTime = millis();
+    Serial.printf("[SHOWER] -> ON (Reason: %s)\n", reason);
+  } else {
+    digitalWrite(SHOWER_PIN, RELAY_OFF);
+    Serial.printf("[SHOWER] -> OFF (Reason: %s)\n", reason);
+  }
+
+  if (currentOn != turnOn && client.connected()) {
+    publishShowerStatus();
   }
 }
 
 void callback(char *topic, byte *payload, unsigned int length) {
-  // Parse payload into string
+  lastMqttSeen = millis();
   String messageTemp;
   for (unsigned int i = 0; i < length; i++) {
     messageTemp += (char)payload[i];
   }
   messageTemp.trim();
 
-  Serial.printf("MQTT Message arrived on [%s]: %s\n", topic,
-                messageTemp.c_str());
+  Serial.printf("MQTT Message arrived on [%s]: %s\n", topic, messageTemp.c_str());
 
-  // 1. Shower (Pin 5) - stored state
   if (String(topic) == TOPIC_SHOWER_SET) {
     if (messageTemp == "1" || messageTemp.equalsIgnoreCase("on")) {
-      digitalWrite(SHOWER_PIN, RELAY_ON);
-      Serial.println("Shower (GPIO 5) -> ON");
-      publishShowerStatus();
+      setShowerState(true, "mqtt_command");
     } else if (messageTemp == "0" || messageTemp.equalsIgnoreCase("off")) {
-      digitalWrite(SHOWER_PIN, RELAY_OFF);
-      Serial.println("Shower (GPIO 5) -> OFF");
-      publishShowerStatus();
+      setShowerState(false, "mqtt_command");
     }
-  }
-  // 2. Reboot (Pin 6) - single state trigger
-  else if (String(topic) == TOPIC_REBOOT_TRIGGER) {
+  } else if (String(topic) == TOPIC_REBOOT_TRIGGER) {
     if (messageTemp == "1" || messageTemp.equalsIgnoreCase("trigger")) {
       digitalWrite(REBOOT_PIN, RELAY_ON);
       rebootTriggerTime = millis();
       rebootActive = true;
-      Serial.println("Reboot (GPIO 6) triggered! Pulsing Pin HIGH...");
+      Serial.println("Reboot pulse initiated. Pulsing GPIO 6 HIGH...");
     }
   }
 }
 
 bool reconnect() {
   Serial.print("Attempting MQTT connection... ");
-  // Create a client ID based on MAC address
   String clientId = "ESP32C3-Relay-" + String(WiFi.macAddress());
 
-  // Connect with Last Will and Testament
-  // Will Topic: esp32/status, Will QoS: 1, Will Retain: true, Will Message:
-  // offline
   if (client.connect(clientId.c_str(), TOPIC_STATUS, 1, true, "offline")) {
     Serial.println("Connected to MQTT Broker.");
+    lastMqttSeen = millis();
 
-    // Publish online status (retained)
     client.publish(TOPIC_STATUS, "online", true);
-
-    // Subscribe to control topics
     client.subscribe(TOPIC_SHOWER_SET);
     client.subscribe(TOPIC_REBOOT_TRIGGER);
 
-    // Publish current status
     publishShowerStatus();
     return true;
   } else {
@@ -204,21 +209,16 @@ void publishShowerStatus() {
 }
 
 void loop() {
-  // 1. Maintain WiFi and MQTT connection
+  unsigned long now = millis();
+
+  // 1. Maintain WiFi and MQTT connection (Non-blocking)
   if (WiFi.status() != WL_CONNECTED) {
-    // Print a status dot periodically while waiting for automatic background
-    // reconnect
-    unsigned long now = millis();
     if (now - lastReconnectAttempt > 5000) {
       lastReconnectAttempt = now;
-      Serial.printf(
-          "WiFi offline, status = %d. Waiting for auto-reconnect...\n",
-          WiFi.status());
+      Serial.printf("WiFi offline (status %d). Waiting for auto-reconnect...\n", WiFi.status());
     }
   } else {
-    // WiFi is connected, verify MQTT connection
     if (!client.connected()) {
-      unsigned long now = millis();
       if (now - lastReconnectAttempt > 5000) {
         lastReconnectAttempt = now;
         if (reconnect()) {
@@ -230,10 +230,37 @@ void loop() {
     }
   }
 
-  // 2. Handle Reboot pin pulse (Single State Trigger) non-blockingly
+  // 2. Local-First Autonomous Fail-Safe 1: Max Continuous Run Cutoff
+  // Prevents motor burnout and dry pump damage even if network drops during ON cycle
+  bool isShowerOn = (digitalRead(SHOWER_PIN) == RELAY_ON);
+  if (isShowerOn && (now - lastShowerStartTime >= MAX_SHOWER_RUNTIME_MS)) {
+    Serial.println("[AUTONOMOUS SAFETY] Max runtime exceeded! Tripping shower relay locally.");
+    setShowerState(false, "safety_max_runtime_cutoff");
+    if (client.connected()) {
+      client.publish(TOPIC_ALERTS, "warning:max_runtime_cutoff", false);
+    }
+  }
+
+  // 3. Local-First Autonomous Fail-Safe 2: Standalone Biological Cycling
+  // If disconnected from broker for > 60 seconds, run autonomous irrigation rhythm
+  bool isNetworkDisconnected = (!client.connected() || WiFi.status() != WL_CONNECTED);
+  if (autonomousOfflineFallback && isNetworkDisconnected && (now - lastMqttSeen > 60000UL)) {
+    unsigned long cycleWindow = now % OFFLINE_CYCLE_PERIOD_MS;
+    if (cycleWindow < OFFLINE_CYCLE_PUMP_ON_MS) {
+      if (!isShowerOn) {
+        Serial.println("[AUTONOMOUS OFFLINE] Starting scheduled periodic hydration.");
+        setShowerState(true, "offline_autonomous_cycle");
+      }
+    } else {
+      if (isShowerOn) {
+        Serial.println("[AUTONOMOUS OFFLINE] Ending periodic hydration cycle.");
+        setShowerState(false, "offline_autonomous_cycle_end");
+      }
+    }
+  }
+
+  // 4. Handle Reboot pin pulse (Single State Trigger) non-blockingly
   if (rebootActive) {
-    unsigned long now = millis();
-    // Keep Pin 6 HIGH for 1000ms, then pull it back LOW
     if (now - rebootTriggerTime >= 1000) {
       digitalWrite(REBOOT_PIN, RELAY_OFF);
       rebootActive = false;

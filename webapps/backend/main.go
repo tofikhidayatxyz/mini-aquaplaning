@@ -71,9 +71,13 @@ func (sc *StateController) saveNoLock() {
 		log.Printf("Error marshalling state: %v\n", err)
 		return
 	}
-	err = os.WriteFile(sc.filePath, data, 0644)
-	if err != nil {
-		log.Printf("Error writing state file: %v\n", err)
+	tmpPath := sc.filePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		log.Printf("Error writing temporary state file: %v\n", err)
+		return
+	}
+	if err := os.Rename(tmpPath, sc.filePath); err != nil {
+		log.Printf("Error committing atomic state file: %v\n", err)
 	}
 }
 
@@ -157,6 +161,8 @@ func (h *StatusHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Pack
 			h.sc.SetConnection(false)
 			log.Println("[Hook] ESP32 status updated: OFFLINE")
 		}
+	} else if topic == "esp32/alerts" {
+		log.Printf("[Hook] Hardware Alert received: %s\n", payload)
 	}
 
 	return pk, nil
