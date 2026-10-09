@@ -163,7 +163,10 @@ func (h *StatusHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Pack
 }
 
 func main() {
-	stateFile := "state.json"
+	stateFile := os.Getenv("STATE_FILE")
+	if stateFile == "" {
+		stateFile = "state.json"
+	}
 	sc := NewStateController(stateFile)
 
 	// Create Mochi MQTT server
@@ -183,9 +186,13 @@ func main() {
 	}
 
 	// Create standard TCP listener explicitly on 0.0.0.0 to allow IPv4 connections
+	mqttPort := os.Getenv("MQTT_PORT")
+	if mqttPort == "" {
+		mqttPort = "1883"
+	}
 	tcpListener := listeners.NewTCP(listeners.Config{
 		ID:      "t1",
-		Address: "0.0.0.0:1883",
+		Address: "0.0.0.0:" + mqttPort,
 	})
 	err = server.AddListener(tcpListener)
 	if err != nil {
@@ -194,7 +201,7 @@ func main() {
 
 	// Start MQTT Broker
 	go func() {
-		log.Println("Starting embedded Mochi MQTT Broker on port 1883...")
+		log.Printf("Starting embedded Mochi MQTT Broker on port %s...\n", mqttPort)
 		if err := server.Serve(); err != nil {
 			log.Fatalf("MQTT Broker failure: %v", err)
 		}
